@@ -21,47 +21,66 @@ v, err := zerotrust.New(zerotrust.Config{
 
 ### HTTP Middleware
 
-Validates the `Cf-Access-Jwt-Assertion` header on every request. On success the authenticated email is stored in the request context; on failure a `403 Forbidden` is returned.
+Validates the `Cf-Access-Jwt-Assertion` header on every request. On success an `AuthResult` (containing the validated `Claims`) is stored in the request context; on failure a `403 Forbidden` is returned.
 
 ```go
 mux := http.NewServeMux()
 mux.Handle("/protected", v.Middleware(protectedHandler))
 ```
 
-Retrieve the email downstream:
+Retrieve auth info downstream:
 
 ```go
 func handler(w http.ResponseWriter, r *http.Request) {
-    email, err := zerotrust.EmailFromContext(r.Context())
+    // Get the principal (email for users, common name for service tokens)
+    principal, err := zerotrust.PrincipalFromContext(r.Context())
     if err != nil {
         http.Error(w, "unauthenticated", http.StatusUnauthorized)
         return
     }
-    fmt.Fprintf(w, "Hello, %s", email)
+    fmt.Fprintf(w, "Hello, %s", principal)
 }
+```
+
+Other context helpers:
+
+```go
+// Full auth result with all claims
+auth, err := zerotrust.AuthResultFromContext(ctx)
+
+// Just the validated claims
+claims, err := zerotrust.ClaimsFromContext(ctx)
+
+// Just the email (empty string for service tokens)
+email, err := zerotrust.EmailFromContext(ctx)
+
+// Check if this is a service token
+if zerotrust.IsServiceTokenFromContext(ctx) { ... }
 ```
 
 ### Validate a Token Directly
 
 ```go
-email, err := v.ValidateToken(tokenStr)
+claims, err := v.ValidateToken(tokenStr)
+fmt.Println(claims.Email, claims.Subject)
 ```
 
 ### Get Full Identity
 
-Fetches the user's name and email from Cloudflare using the `CF_Authorization` cookie. Results are cached for 1 hour.
+Fetches the user's name and email from Cloudflare using the `CF_Authorization` cookie. Results are cached by the JWT subject (stable user ID) for 1 hour.
 
 ```go
-identity, err := v.GetIdentity(cfAuthCookieValue, email)
+identity, err := v.GetIdentity(cfAuthCookieValue, claims.Subject)
 fmt.Println(identity.Name, identity.Email)
 ```
 
 ### Identity from Request (Convenience)
 
-Validates the token and fetches the full identity in one call. Falls back to email-only if the `CF_Authorization` cookie is missing.
+Validates the token and fetches the full identity in one call. Returns both the `Identity` and validated `Claims`. Falls back to email-only identity if the `CF_Authorization` cookie is missing.
 
 ```go
-identity, err := v.IdentityFromRequest(r)
+identity, claims, err := v.IdentityFromRequest(r)
+fmt.Println(identity.Name, identity.Email, claims.Subject)
 ```
 
 ## API Reference
@@ -71,7 +90,9 @@ identity, err := v.IdentityFromRequest(r)
 | Type | Description |
 |------|-------------|
 | `Config` | Configuration: `TeamDomain` and `Audience` |
-| `Identity` | Authenticated user: `Email` and `Name` |
+| `Claims` | Validated JWT claims: `Email`, `Subject`, `CommonName`, `Country`, `Type`, etc. |
+| `Identity` | Full user identity from Cloudflare: `Email`, `Name`, `UserUUID`, `Groups`, `IP`, etc. |
+| `AuthResult` | Middleware result stored in context, wrapping `Claims` |
 | `Validator` | Stateful validator with key and identity caching |
 
 ### Functions
@@ -79,16 +100,22 @@ identity, err := v.IdentityFromRequest(r)
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `New` | `New(cfg Config) (*Validator, error)` | Create a new validator |
-| `EmailFromContext` | `EmailFromContext(ctx context.Context) (string, error)` | Extract email from request context |
+| `AuthResultFromContext` | `AuthResultFromContext(ctx) (*AuthResult, error)` | Extract full auth result from context |
+| `ClaimsFromContext` | `ClaimsFromContext(ctx) (*Claims, error)` | Extract validated claims from context |
+| `EmailFromContext` | `EmailFromContext(ctx) (string, error)` | Extract email from context |
+| `PrincipalFromContext` | `PrincipalFromContext(ctx) (string, error)` | Extract principal (email or common name) from context |
+| `IsServiceTokenFromContext` | `IsServiceTokenFromContext(ctx) bool` | Check if request used a service token |
 
 ### Validator Methods
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `ValidateToken` | `ValidateToken(tokenStr string) (string, error)` | Validate a JWT and return the email |
-| `GetIdentity` | `GetIdentity(cfAuthCookie, email string) (Identity, error)` | Fetch full identity (cached) |
-| `IdentityFromRequest` | `IdentityFromRequest(r *http.Request) (Identity, error)` | Validate + fetch identity from an HTTP request |
+| `ValidateToken` | `ValidateToken(tokenStr string) (*Claims, error)` | Validate a JWT and return parsed claims |
+| `GetIdentity` | `GetIdentity(cfAuthCookie, subject string) (Identity, error)` | Fetch full identity (cached by subject) |
+| `IdentityFromRequest` | `IdentityFromRequest(r *http.Request) (Identity, *Claims, error)` | Validate + fetch identity from an HTTP request |
 | `Middleware` | `Middleware(next http.Handler) http.Handler` | HTTP middleware for token validation |
+| `LogoutURL` | `LogoutURL() string` | Return the Cloudflare Access logout URL |
+| `LogoutHandler` | `LogoutHandler() http.Handler` | HTTP handler that redirects to logout |
 
 ## How It Works
 

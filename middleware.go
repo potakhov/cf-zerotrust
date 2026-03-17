@@ -8,11 +8,11 @@ import (
 
 type contextKey string
 
-const contextKeyIdentity contextKey = "cf-identity"
+const contextKeyAuth contextKey = "cf-auth"
 
 // Middleware returns an HTTP middleware that validates Cloudflare Access JWT
-// tokens. On success, it stores the email in the request context (retrievable
-// via EmailFromContext). On failure, it responds with 403 Forbidden.
+// tokens (both user and service tokens). On success, it stores an AuthResult
+// in the request context. On failure, it responds with 403 Forbidden.
 func (v *Validator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tokenStr := r.Header.Get("Cf-Access-Jwt-Assertion")
@@ -21,23 +21,60 @@ func (v *Validator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		email, err := v.ValidateToken(tokenStr)
+		claims, err := v.ValidateToken(tokenStr)
 		if err != nil {
 			http.Error(w, `{"error":"authentication failed"}`, http.StatusForbidden)
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), contextKeyIdentity, email)
+		result := &AuthResult{Claims: *claims}
+		ctx := context.WithValue(r.Context(), contextKeyAuth, result)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// EmailFromContext extracts the authenticated email from the request context,
-// as set by Middleware.
-func EmailFromContext(ctx context.Context) (string, error) {
-	email, ok := ctx.Value(contextKeyIdentity).(string)
-	if !ok {
-		return "", fmt.Errorf("no email found in context")
+// AuthResultFromContext extracts the full AuthResult from the request context.
+func AuthResultFromContext(ctx context.Context) (*AuthResult, error) {
+	result, ok := ctx.Value(contextKeyAuth).(*AuthResult)
+	if !ok || result == nil {
+		return nil, fmt.Errorf("no auth result found in context")
 	}
-	return email, nil
+	return result, nil
+}
+
+// ClaimsFromContext extracts the validated Claims from the request context.
+func ClaimsFromContext(ctx context.Context) (*Claims, error) {
+	result, err := AuthResultFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &result.Claims, nil
+}
+
+// EmailFromContext extracts the authenticated email from the request context.
+// For service tokens (which have no email), returns an empty string and nil error.
+// Returns an error only if no auth result exists in the context.
+func EmailFromContext(ctx context.Context) (string, error) {
+	result, err := AuthResultFromContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return result.Claims.Email, nil
+}
+
+// PrincipalFromContext returns the identifying string for the authenticated
+// entity: email for user tokens, common name for service tokens.
+func PrincipalFromContext(ctx context.Context) (string, error) {
+	result, err := AuthResultFromContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return result.Principal(), nil
+}
+
+// IsServiceTokenFromContext reports whether the request was authenticated
+// via a Cloudflare Access service token.
+func IsServiceTokenFromContext(ctx context.Context) bool {
+	result, _ := AuthResultFromContext(ctx)
+	return result != nil && result.IsServiceToken()
 }

@@ -62,6 +62,19 @@ func (v *Validator) certsURL() string {
 	return fmt.Sprintf("https://%s.cloudflareaccess.com/cdn-cgi/access/certs", v.teamDomain)
 }
 
+// LogoutURL returns the Cloudflare Access logout URL for this team domain.
+func (v *Validator) LogoutURL() string {
+	return fmt.Sprintf("https://%s.cloudflareaccess.com/cdn-cgi/access/logout", v.teamDomain)
+}
+
+// LogoutHandler returns an http.Handler that redirects the user to the
+// Cloudflare Access logout endpoint, revoking their session.
+func (v *Validator) LogoutHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, v.LogoutURL(), http.StatusFound)
+	})
+}
+
 func (v *Validator) fetchKeys() error {
 	resp, err := http.Get(v.certsURL())
 	if err != nil {
@@ -138,12 +151,12 @@ func (v *Validator) getKeys() (map[string]*rsa.PublicKey, error) {
 }
 
 // ValidateToken validates a Cloudflare Access JWT token string and returns
-// the authenticated user's email. The token is typically found in the
+// the parsed claims. The token is typically found in the
 // Cf-Access-Jwt-Assertion header.
-func (v *Validator) ValidateToken(tokenStr string) (string, error) {
+func (v *Validator) ValidateToken(tokenStr string) (*Claims, error) {
 	keys, err := v.getKeys()
 	if err != nil {
-		return "", fmt.Errorf("get CF keys: %w", err)
+		return nil, fmt.Errorf("get CF keys: %w", err)
 	}
 
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (any, error) {
@@ -159,14 +172,34 @@ func (v *Validator) ValidateToken(tokenStr string) (string, error) {
 	}, jwt.WithAudience(v.audience), jwt.WithExpirationRequired())
 
 	if err != nil {
-		return "", fmt.Errorf("validate JWT: %w", err)
+		return nil, fmt.Errorf("validate JWT: %w", err)
 	}
 
-	claims, ok := token.Claims.(jwt.MapClaims)
+	mapClaims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", fmt.Errorf("invalid claims type")
+		return nil, fmt.Errorf("invalid claims type")
 	}
 
-	email, _ := claims["email"].(string)
-	return email, nil
+	c := &Claims{
+		Email:         claimStr(mapClaims, "email"),
+		Subject:       claimStr(mapClaims, "sub"),
+		CommonName:    claimStr(mapClaims, "common_name"),
+		Country:       claimStr(mapClaims, "country"),
+		Type:          claimStr(mapClaims, "type"),
+		IdentityNonce: claimStr(mapClaims, "identity_nonce"),
+	}
+
+	if iat, ok := mapClaims["iat"].(float64); ok {
+		c.IssuedAt = int64(iat)
+	}
+	if exp, ok := mapClaims["exp"].(float64); ok {
+		c.ExpiresAt = int64(exp)
+	}
+
+	return c, nil
+}
+
+func claimStr(claims jwt.MapClaims, key string) string {
+	s, _ := claims[key].(string)
+	return s
 }

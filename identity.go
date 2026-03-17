@@ -18,11 +18,11 @@ func (v *Validator) identityURL() string {
 
 // GetIdentity retrieves the full identity for an authenticated user.
 // It requires the CF_Authorization cookie value from the request.
-// Results are cached for 1 hour.
-func (v *Validator) GetIdentity(cfAuthCookie string, email string) (Identity, error) {
-	if email != "" {
+// Results are cached by subject (the stable user ID from the JWT) for 1 hour.
+func (v *Validator) GetIdentity(cfAuthCookie string, subject string) (Identity, error) {
+	if subject != "" {
 		v.idMu.RLock()
-		if entry, ok := v.idCache[email]; ok && time.Since(entry.fetched) < v.idCacheTTL {
+		if entry, ok := v.idCache[subject]; ok && time.Since(entry.fetched) < v.idCacheTTL {
 			v.idMu.RUnlock()
 			return entry.identity, nil
 		}
@@ -34,9 +34,9 @@ func (v *Validator) GetIdentity(cfAuthCookie string, email string) (Identity, er
 		return Identity{}, err
 	}
 
-	if id.Email != "" {
+	if subject != "" {
 		v.idMu.Lock()
-		v.idCache[id.Email] = idCacheEntry{identity: id, fetched: time.Now()}
+		v.idCache[subject] = idCacheEntry{identity: id, fetched: time.Now()}
 		v.idMu.Unlock()
 	}
 
@@ -67,24 +67,30 @@ func (v *Validator) fetchIdentity(cfAuthCookie string) (Identity, error) {
 	return result, nil
 }
 
-// IdentityFromRequest is a convenience that validates the token, then
-// fetches the full identity (name + email) using the CF_Authorization cookie.
-// Returns the identity or an error if validation or identity fetch fails.
-func (v *Validator) IdentityFromRequest(r *http.Request) (Identity, error) {
+// IdentityFromRequest validates the token, then fetches the full identity
+// (name, email, groups, etc.) using the CF_Authorization cookie.
+// Returns both the identity and the validated JWT claims.
+// If the cookie is missing, returns a partial identity with just the email from claims.
+func (v *Validator) IdentityFromRequest(r *http.Request) (Identity, *Claims, error) {
 	tokenStr := r.Header.Get("Cf-Access-Jwt-Assertion")
 	if tokenStr == "" {
-		return Identity{}, fmt.Errorf("missing Cf-Access-Jwt-Assertion header")
+		return Identity{}, nil, fmt.Errorf("missing Cf-Access-Jwt-Assertion header")
 	}
 
-	email, err := v.ValidateToken(tokenStr)
+	claims, err := v.ValidateToken(tokenStr)
 	if err != nil {
-		return Identity{}, err
+		return Identity{}, nil, err
 	}
 
 	cookie, err := r.Cookie("CF_Authorization")
 	if err != nil {
-		return Identity{Email: email}, nil
+		return Identity{Email: claims.Email}, claims, nil
 	}
 
-	return v.GetIdentity(cookie.Value, email)
+	id, err := v.GetIdentity(cookie.Value, claims.Subject)
+	if err != nil {
+		return Identity{Email: claims.Email}, claims, nil
+	}
+
+	return id, claims, nil
 }
