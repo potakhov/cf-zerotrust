@@ -67,10 +67,27 @@ func (v *Validator) fetchIdentity(cfAuthCookie string) (Identity, error) {
 	return result, nil
 }
 
+// ServiceTokenIdentityFromClaims builds a synthetic Identity from service token
+// JWT claims. Service tokens don't have a user identity endpoint, so the
+// identity is derived entirely from the token claims.
+func ServiceTokenIdentityFromClaims(claims *Claims) Identity {
+	return Identity{
+		ServiceToken: true,
+		CommonName:   claims.CommonName,
+		Country:      claims.Country,
+	}
+}
+
 // IdentityFromRequest validates the token, then fetches the full identity
 // (name, email, groups, etc.) using the CF_Authorization cookie.
 // Returns both the identity and the validated JWT claims.
-// If the cookie is missing, returns a partial identity with just the email from claims.
+//
+// For service tokens (identified by CommonName and no email), a synthetic
+// identity is returned from the JWT claims — no cookie or identity endpoint
+// is needed.
+//
+// For user tokens, if the cookie is missing, returns a partial identity with
+// just the email from claims.
 func (v *Validator) IdentityFromRequest(r *http.Request) (Identity, *Claims, error) {
 	tokenStr := r.Header.Get("Cf-Access-Jwt-Assertion")
 	if tokenStr == "" {
@@ -80,6 +97,10 @@ func (v *Validator) IdentityFromRequest(r *http.Request) (Identity, *Claims, err
 	claims, err := v.ValidateToken(tokenStr)
 	if err != nil {
 		return Identity{}, nil, err
+	}
+
+	if claims.IsServiceToken() {
+		return ServiceTokenIdentityFromClaims(claims), claims, nil
 	}
 
 	cookie, err := r.Cookie("CF_Authorization")

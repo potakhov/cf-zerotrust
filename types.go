@@ -24,8 +24,8 @@ type DeviceSession struct {
 	LastAuthenticated float64 `json:"last_authenticated"`
 }
 
-// Identity represents a Cloudflare Access authenticated user,
-// as returned by the /cdn-cgi/access/get-identity endpoint.
+// Identity represents a Cloudflare Access authenticated entity (user or service token),
+// as returned by the /cdn-cgi/access/get-identity endpoint or synthesized from JWT claims.
 type Identity struct {
 	Email          string                   `json:"email"`
 	Name           string                   `json:"name"`
@@ -44,6 +44,23 @@ type Identity struct {
 	DeviceSessions map[string]DeviceSession `json:"deviceSessions"`
 	OIDCFields     map[string]any           `json:"oidc_fields"`
 	SAMLAttributes map[string]any           `json:"custom_attributes"`
+
+	// Service token fields — populated when the request is from a service token.
+	ServiceToken bool   `json:"service_token"`
+	CommonName   string `json:"common_name,omitempty"`
+}
+
+// IsServiceToken reports whether this identity represents a service token.
+func (id *Identity) IsServiceToken() bool {
+	return id.ServiceToken
+}
+
+// Principal returns the identifying string: Email for users, CommonName for service tokens.
+func (id *Identity) Principal() string {
+	if id.Email != "" {
+		return id.Email
+	}
+	return id.CommonName
 }
 
 // Claims holds the validated JWT claims from a Cloudflare Access token.
@@ -75,7 +92,8 @@ func (c *Claims) Principal() string {
 
 // AuthResult is the authentication result stored in the request context by Middleware.
 type AuthResult struct {
-	Claims Claims
+	Claims   Claims
+	Identity *Identity // nil unless identity was fetched or synthesized
 }
 
 // Principal returns the identifying string for the authenticated entity.

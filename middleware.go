@@ -33,6 +33,25 @@ func (v *Validator) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// MiddlewareWithIdentity is like Middleware but also fetches the full identity.
+// For service tokens, a synthetic identity is built from JWT claims.
+// For user tokens, the identity is fetched via the CF_Authorization cookie
+// (falling back to a partial identity from claims if the cookie is missing).
+// The identity is available via IdentityFromContext.
+func (v *Validator) MiddlewareWithIdentity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, claims, err := v.IdentityFromRequest(r)
+		if err != nil {
+			http.Error(w, `{"error":"authentication failed"}`, http.StatusForbidden)
+			return
+		}
+
+		result := &AuthResult{Claims: *claims, Identity: &id}
+		ctx := context.WithValue(r.Context(), contextKeyAuth, result)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // AuthResultFromContext extracts the full AuthResult from the request context.
 func AuthResultFromContext(ctx context.Context) (*AuthResult, error) {
 	result, ok := ctx.Value(contextKeyAuth).(*AuthResult)
@@ -77,4 +96,15 @@ func PrincipalFromContext(ctx context.Context) (string, error) {
 func IsServiceTokenFromContext(ctx context.Context) bool {
 	result, _ := AuthResultFromContext(ctx)
 	return result != nil && result.IsServiceToken()
+}
+
+// IdentityFromContext extracts the Identity from the request context.
+// Returns nil if no identity was fetched (e.g., middleware was used without
+// WithIdentity option) or no auth result exists.
+func IdentityFromContext(ctx context.Context) *Identity {
+	result, _ := AuthResultFromContext(ctx)
+	if result == nil {
+		return nil
+	}
+	return result.Identity
 }
